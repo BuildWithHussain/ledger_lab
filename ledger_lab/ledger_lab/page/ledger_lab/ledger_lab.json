@@ -1,0 +1,26 @@
+{
+ "content": null,
+ "creation": "2026-06-02 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-06-02 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Ledger Lab",
+ "name": "ledger-lab",
+ "owner": "Administrator",
+ "page_name": "Ledger Lab",
+ "roles": [
+  {
+   "role": "Accounts User"
+  },
+  {
+   "role": "Accounts Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Ledger Lab"
+}
