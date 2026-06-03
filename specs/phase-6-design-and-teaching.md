@@ -5,7 +5,7 @@ threads, all in the existing Desk Page (no new architectural spine — phases 1�
 proved realtime, scope, and drill-down):
 
 1. **Design refresh** — a distinctive, production-grade look (via the `frontend-design` skill),
-   not the generic default-Frappe-card aesthetic.
+   not the generic default-Frappe-card aesthetic. Do not do too out of the box, keep it clean and minimalist.
 2. **Persistent live impact** — when a transaction posts, the effect on each box must *linger*
    so a learner can actually read what moved and where, instead of catching a ~1s flash.
 3. **Per-line teaching** — each transaction explains, in plain English, what it did to each

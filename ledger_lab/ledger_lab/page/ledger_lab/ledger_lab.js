@@ -10,6 +10,7 @@ frappe.pages["ledger-lab"].on_page_load = function (wrapper) {
 };
 
 const LL_ROOT_TYPES = ["Asset", "Liability", "Equity", "Income", "Expense"];
+const LL_ALL_BOXES = [...LL_ROOT_TYPES, "NetProfit"];
 const LL_DEBIT_NORMAL = new Set(["Asset", "Expense"]);
 const LL_LABELS = {
 	Asset: __("Assets"),
@@ -19,6 +20,19 @@ const LL_LABELS = {
 	Expense: __("Expense"),
 };
 const LL_ANIM_MS = 450;
+const LL_FLASH_MS = 2000;
+
+// Plain-English, data-driven one-liners keyed by voucher_type. Intentionally
+// generic — no per-document narratives that could go stale. A type not in the
+// map simply gets no summary (the per-line clauses still explain the entry).
+const LL_VOUCHER_SUMMARY = {
+	"Sales Invoice": __("A sale recorded revenue and a receivable (money owed to you)."),
+	"Purchase Invoice": __("A purchase recorded a cost and a payable (money you owe)."),
+	"Payment Entry": __("A payment moved funds between accounts."),
+	"Journal Entry": __("A manual journal entry adjusted these accounts directly."),
+	"Sales Order": __("A sales order was booked."),
+	"Purchase Order": __("A purchase order was booked."),
+};
 
 function ll_reduced_motion() {
 	return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -30,6 +44,18 @@ function ll_line_delta(root_type, debit, credit) {
 	const d = flt(debit);
 	const c = flt(credit);
 	return LL_DEBIT_NORMAL.has(root_type) ? d - c : c - d;
+}
+
+// Compact, tz-safe relative time from a captured epoch (ms). We stamp events on
+// receipt and compute locally, so there's no timezone round-trip to get wrong.
+function ll_rel_time(ms) {
+	const diff = Math.max(0, (Date.now() - ms) / 1000);
+	if (diff < 45) return __("just now");
+	if (diff < 90) return __("1m ago");
+	if (diff < 3600) return __("{0}m ago", [Math.round(diff / 60)]);
+	if (diff < 7200) return __("1h ago");
+	if (diff < 86400) return __("{0}h ago", [Math.round(diff / 3600)]);
+	return __("{0}d ago", [Math.round(diff / 86400)]);
 }
 
 class LedgerLab {
@@ -46,115 +72,200 @@ class LedgerLab {
 		// so deltas/flash are computed client-side from each realtime payload.
 		this.boxes = { Asset: 0, Liability: 0, Equity: 0, Income: 0, Expense: 0 };
 		this.displayed = { ...this.boxes, NetProfit: 0 };
+		// Persistent "last impact" per box: {delta, voucher_type, voucher_no, ts}.
+		// Survives the transient flash so a learner can read what moved; cleared on
+		// any authoritative reload (company/scope change, manual Refresh).
+		this.lastImpact = {};
+		this._seq = 0; // unique ids for expandable teaching panels
 		this.render_skeleton();
 		this.setup_controls();
 		this.bind_realtime();
 		this.refresh();
 		this.load_feed();
+		// Keep the sticky badges' relative times ("just now" → "2m ago") fresh.
+		this.impact_timer = setInterval(() => this.tick_impact_times(), 30000);
 	}
 
 	render_skeleton() {
 		// All boxes except the derived Net Profit are clickable to reveal the
 		// constituent accounts of that root type (phase 5 drill-down).
-		const box = (root, label) => {
+		const box = (root, label, kind) => {
 			const clickable = root !== "NetProfit";
 			return `
-			<div class="ll-box ${clickable ? "ll-clickable" : ""}" data-root="${root}"${
+			<div class="ll-box ${kind} ${clickable ? "ll-clickable" : "ll-derived"}" data-root="${root}"${
 				clickable ? ' role="button" tabindex="0"' : ""
 			}>
+				${clickable ? `<div class="ll-box-hint">${__("View accounts")} →</div>` : `<div class="ll-box-hint ll-derived-tag">${__("Derived")}</div>`}
 				<div class="ll-box-label">${label}</div>
 				<div class="ll-box-value"><span class="ll-num" data-num="${root}">—</span></div>
-				<div class="ll-box-delta"></div>
-				${clickable ? `<div class="ll-box-hint">${__("View accounts")} →</div>` : ""}
+				<div class="ll-box-impact" data-impact="${root}"></div>
 			</div>`;
 		};
 
-		const num = (root) => `<span class="ll-num" data-num="${root}">—</span>`;
+		const eqterm = (root, label) =>
+			`<span class="ll-eq-t"><span class="ll-eq-lbl">${label}</span> <span class="ll-num" data-num="${root}">—</span></span>`;
 
 		$(`
 			<style>
+				.ll-wrap {
+					--ll-green: #16a34a; --ll-red: #dc2626;
+					--ll-green-bg: rgba(34, 197, 94, 0.16);
+					--ll-red-bg: rgba(239, 68, 68, 0.16);
+					/* Fixed brand accent. Deliberately NOT var(--primary): this
+					   Frappe build's --primary is a near-black that doesn't flip
+					   for dark mode, so it vanishes on the dark surface. This blue
+					   has sufficient contrast on both light and dark backgrounds. */
+					--ll-accent: #3b82f6;
+					max-width: 1100px; margin: 0 auto;
+				}
+
+				/* ---- Hero: the accounting equation ---- */
 				.ll-equation {
+					position: relative; overflow: hidden;
 					border: 1px solid var(--border-color);
-					border-radius: var(--border-radius-lg, 8px);
-					padding: 16px 20px; margin: 12px 0 4px;
-					background: var(--card-bg, var(--fg-color));
+					border-radius: 14px;
+					padding: 22px 26px 20px;
+					margin: 14px 0 6px;
+					background:
+						radial-gradient(140% 160% at 0% 0%,
+							color-mix(in srgb, var(--ll-accent) 8%, var(--card-bg, var(--fg-color))) 0%,
+							var(--card-bg, var(--fg-color)) 58%);
+				}
+				.ll-equation::before {
+					content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+					background: var(--ll-accent);
+				}
+				.ll-eq-kicker {
+					font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+					font-weight: 700; color: var(--ll-accent); margin-bottom: 12px;
 				}
 				.ll-eq-main {
-					display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-					font-size: 16px;
+					display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px;
+					font-size: 19px; line-height: 1.4;
 				}
-				.ll-eq-main .ll-num { font-weight: 700; }
-				.ll-eq-op { color: var(--text-muted); font-weight: 600; padding: 0 2px; }
-				.ll-eq-t { color: var(--text-color); }
-				.ll-eq-status { margin-left: auto; font-weight: 700; font-size: 14px; }
-				.ll-eq-status.ok { color: var(--ll-green); }
-				.ll-eq-status.warn { color: var(--ll-red); }
-				.ll-eq-sub { color: var(--text-muted); font-size: var(--text-sm); margin-top: 6px; }
+				.ll-eq-t { display: inline-flex; align-items: baseline; gap: 7px; }
+				.ll-eq-lbl { color: var(--text-muted); }
+				.ll-eq-main .ll-num {
+					font-weight: 700; color: var(--text-color);
+					font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
+				}
+				.ll-eq-op { color: var(--text-muted); font-weight: 600; }
+				.ll-eq-status {
+					margin-left: auto; font-weight: 700; font-size: 12.5px;
+					padding: 4px 12px; border-radius: 999px; white-space: nowrap;
+				}
+				.ll-eq-status.ok { color: var(--ll-green); background: var(--ll-green-bg); }
+				.ll-eq-status.warn { color: var(--ll-red); background: var(--ll-red-bg); }
+				.ll-eq-sub { color: var(--text-muted); font-size: var(--text-sm); margin-top: 10px; }
+				.ll-eq-sub .ll-num { font-variant-numeric: tabular-nums; color: var(--text-color); }
 
-				.ll-section-title {
-					font-size: var(--text-sm); color: var(--text-muted);
-					text-transform: uppercase; letter-spacing: 0.04em;
-					margin: 18px 0 6px;
+				/* ---- Section groups: Balance Sheet vs P&L ---- */
+				.ll-section { margin-top: 22px; }
+				.ll-section-head {
+					display: flex; align-items: center; gap: 9px; margin: 0 2px 10px;
 				}
-				.ll-grid { display: flex; gap: 12px; flex-wrap: wrap; }
+				.ll-section-dot {
+					width: 8px; height: 8px; border-radius: 2px;
+					background: var(--ll-accent);
+				}
+				.ll-section.pl .ll-section-dot {
+					background: color-mix(in srgb, var(--ll-accent) 45%, var(--text-muted));
+				}
+				.ll-section-title {
+					font-size: var(--text-sm); font-weight: 600; letter-spacing: 0.06em;
+					text-transform: uppercase; color: var(--text-muted);
+				}
+				.ll-section-body {
+					display: flex; gap: 12px; flex-wrap: wrap;
+					border: 1px solid var(--border-color); border-radius: 12px;
+					padding: 14px;
+					background: color-mix(in srgb, var(--text-muted) 3%, var(--card-bg, var(--fg-color)));
+				}
+
+				/* ---- Boxes ---- */
 				.ll-box {
-					flex: 1 1 160px; min-width: 160px; position: relative; overflow: hidden;
+					flex: 1 1 180px; min-width: 168px; position: relative; overflow: hidden;
 					border: 1px solid var(--border-color);
-					border-radius: var(--border-radius-lg, 8px);
-					padding: 20px; background: var(--card-bg, var(--fg-color));
+					border-radius: 10px;
+					padding: 16px 18px 14px;
+					background: var(--card-bg, var(--fg-color));
 				}
 				.ll-box-label {
 					font-size: var(--text-sm); color: var(--text-muted);
 					text-transform: uppercase; letter-spacing: 0.04em;
 				}
 				.ll-box-value {
-					font-size: 24px; font-weight: 600; margin-top: 8px;
+					font-size: 27px; font-weight: 600; margin-top: 4px; letter-spacing: -0.02em;
 					color: var(--text-color); font-variant-numeric: tabular-nums;
 				}
 				.ll-box.ll-clickable { cursor: pointer; transition: border-color 0.12s ease; }
-				.ll-box.ll-clickable:hover { border-color: var(--text-muted); }
-				.ll-box.ll-clickable:focus-visible { outline: 2px solid var(--text-muted); outline-offset: 1px; }
+				.ll-box.ll-clickable:hover { border-color: var(--ll-accent); }
+				.ll-box.ll-clickable:focus-visible { outline: 2px solid var(--ll-accent); outline-offset: 1px; }
 				.ll-box-hint {
-					margin-top: 10px; font-size: 11px; font-weight: 600;
-					text-transform: uppercase; letter-spacing: 0.04em;
-					color: var(--text-muted); opacity: 0; transition: opacity 0.12s ease;
+					position: absolute; top: 14px; right: 16px;
+					font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+					text-transform: uppercase; color: var(--ll-accent);
+					opacity: 0; transition: opacity 0.12s ease;
 				}
 				.ll-box.ll-clickable:hover .ll-box-hint,
 				.ll-box.ll-clickable:focus-visible .ll-box-hint { opacity: 1; }
-				.ll-box-delta {
-					position: absolute; top: 14px; right: 16px;
-					font-size: var(--text-sm); font-weight: 600;
-					opacity: 0; transform: translateY(-4px);
+				.ll-box-hint.ll-derived-tag { opacity: 0.55; color: var(--text-muted); }
+
+				/* Persistent last-impact badge (supersedes the old transient chip). */
+				.ll-box-impact {
+					margin-top: 13px; min-height: 31px;
+					display: flex; flex-direction: column; justify-content: flex-end; gap: 2px;
 				}
-				.ll-box-delta.show { animation: ll-delta-pop 1.6s ease-out forwards; }
-				.ll-box-delta.up { color: var(--ll-green); }
-				.ll-box-delta.down { color: var(--ll-red); }
-				@keyframes ll-delta-pop {
-					0% { opacity: 0; transform: translateY(-4px); }
-					15% { opacity: 1; transform: translateY(0); }
-					70% { opacity: 1; transform: translateY(0); }
-					100% { opacity: 0; transform: translateY(-4px); }
+				.ll-impact-delta {
+					font-size: var(--text-sm); font-weight: 700;
+					font-variant-numeric: tabular-nums;
 				}
-				.ll-box.flash-up { animation: ll-flash-up 0.9s ease-out; }
-				.ll-box.flash-down { animation: ll-flash-down 0.9s ease-out; }
+				.ll-impact-delta.up { color: var(--ll-green); }
+				.ll-impact-delta.down { color: var(--ll-red); }
+				.ll-impact-cap { font-size: 11px; line-height: 1.35; color: var(--text-muted); }
+
+				/* Longer, more prominent flash than phase 3 (~0.9s → 2s). */
+				.ll-box.flash-up { animation: ll-flash-up 2s ease-out; }
+				.ll-box.flash-down { animation: ll-flash-down 2s ease-out; }
 				@keyframes ll-flash-up {
-					0% { background: var(--ll-green-bg); box-shadow: inset 0 0 0 2px var(--ll-green); }
-					100% { background: var(--card-bg, var(--fg-color)); box-shadow: none; }
+					0%, 30% { background: var(--ll-green-bg); box-shadow: inset 0 0 0 2px var(--ll-green); }
+					100% { background: var(--card-bg, var(--fg-color)); box-shadow: inset 0 0 0 0 transparent; }
 				}
 				@keyframes ll-flash-down {
-					0% { background: var(--ll-red-bg); box-shadow: inset 0 0 0 2px var(--ll-red); }
-					100% { background: var(--card-bg, var(--fg-color)); box-shadow: none; }
+					0%, 30% { background: var(--ll-red-bg); box-shadow: inset 0 0 0 2px var(--ll-red); }
+					100% { background: var(--card-bg, var(--fg-color)); box-shadow: inset 0 0 0 0 transparent; }
 				}
 
-				.ll-feed { margin-top: 24px; }
+				/* ---- Scope tabs ---- */
+				.ll-toolbar { display: flex; align-items: center; margin-top: 4px; }
+				.ll-scope {
+					display: inline-flex; margin-left: auto;
+					border: 1px solid var(--border-color);
+					border-radius: 8px; overflow: hidden;
+				}
+				.ll-scope-tab {
+					border: none; background: transparent; cursor: pointer;
+					padding: 6px 14px; font-size: var(--text-sm); font-weight: 500;
+					color: var(--text-muted); border-right: 1px solid var(--border-color);
+					transition: background 0.12s ease, color 0.12s ease;
+				}
+				.ll-scope-tab:last-child { border-right: none; }
+				.ll-scope-tab:hover { color: var(--text-color); }
+				.ll-scope-tab.active {
+					background: var(--ll-accent); color: #fff; font-weight: 600;
+				}
+
+				/* ---- Feed ---- */
+				.ll-feed { margin-top: 26px; }
+				.ll-feed-head-row { display: flex; align-items: center; gap: 9px; margin: 0 2px 10px; }
 				.ll-feed-title {
-					font-size: var(--text-sm); color: var(--text-muted);
-					text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px;
+					font-size: var(--text-sm); font-weight: 600; letter-spacing: 0.06em;
+					text-transform: uppercase; color: var(--text-muted);
 				}
 				.ll-feed-list {
-					max-height: 460px; overflow-y: auto;
+					max-height: 480px; overflow-y: auto;
 					border: 1px solid var(--border-color);
-					border-radius: var(--border-radius-lg, 8px);
+					border-radius: 12px;
 				}
 				.ll-feed-row { padding: 12px 16px; border-bottom: 1px solid var(--border-color); }
 				.ll-feed-row:last-child { border-bottom: none; }
@@ -163,7 +274,9 @@ class LedgerLab {
 					0% { opacity: 0; transform: translateY(-8px); background: var(--ll-green-bg); }
 					100% { opacity: 1; transform: translateY(0); background: transparent; }
 				}
-				.ll-feed-voucher { font-weight: 600; margin-bottom: 6px; }
+				.ll-feed-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+				.ll-feed-voucher { font-weight: 600; flex: 1 1 auto; min-width: 0; }
+				.ll-feed-voucher a { word-break: break-word; }
 				.ll-feed-row.is-cancelled { opacity: 0.7; }
 				.ll-badge-cancelled {
 					display: inline-block; margin-left: 8px;
@@ -171,6 +284,23 @@ class LedgerLab {
 					border-radius: 4px; background: var(--bg-light-gray, #f0f0f0);
 					color: var(--text-muted); text-transform: uppercase;
 				}
+				.ll-feed-expand {
+					flex: 0 0 auto; width: 27px; height: 27px;
+					border: 1px solid var(--border-color); border-radius: 7px;
+					background: transparent; color: var(--text-muted); cursor: pointer;
+					display: inline-flex; align-items: center; justify-content: center;
+					transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+				}
+				.ll-feed-expand:hover {
+					color: var(--text-color);
+					background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+				}
+				.ll-feed-expand[aria-expanded="true"] {
+					color: var(--ll-accent); border-color: var(--ll-accent);
+				}
+				.ll-feed-expand .ll-chev { transition: transform 0.2s ease; }
+				.ll-feed-expand[aria-expanded="true"] .ll-chev { transform: rotate(180deg); }
+
 				.ll-feed-line {
 					display: flex; gap: 8px; align-items: baseline;
 					font-size: var(--text-sm); color: var(--text-color); padding: 1px 0;
@@ -182,11 +312,39 @@ class LedgerLab {
 				}
 				.ll-tag.up { background: var(--ll-green-bg); color: var(--ll-green); }
 				.ll-tag.down { background: var(--ll-red-bg); color: var(--ll-red); }
-				.ll-feed-acct { flex: 1 1 auto; }
+				.ll-feed-acct { flex: 1 1 auto; word-break: break-word; }
 				.ll-feed-amt { font-variant-numeric: tabular-nums; }
 				.ll-feed-empty { padding: 16px; color: var(--text-muted); }
 
-				/* Drill-down dialog (rendered outside .ll-wrap, so explicit colors). */
+				/* Expandable per-line teaching panel (grid-rows collapse trick). */
+				.ll-teach-wrap {
+					display: grid; grid-template-rows: 0fr;
+					transition: grid-template-rows 0.22s ease;
+				}
+				.ll-teach-wrap.open { grid-template-rows: 1fr; }
+				.ll-teach-inner { overflow: hidden; min-height: 0; }
+				.ll-teach {
+					margin-top: 10px; padding: 12px 14px; border-radius: 9px;
+					background: color-mix(in srgb, var(--ll-accent) 5%, var(--card-bg, var(--fg-color)));
+					border: 1px solid color-mix(in srgb, var(--ll-accent) 16%, var(--border-color));
+				}
+				.ll-teach-summary {
+					font-size: var(--text-sm); color: var(--text-color);
+					font-style: italic; margin-bottom: 8px;
+				}
+				.ll-teach-line {
+					display: flex; gap: 9px; align-items: baseline;
+					font-size: var(--text-sm); color: var(--text-color); padding: 3px 0;
+				}
+				.ll-teach-dot {
+					width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto;
+					transform: translateY(-1px);
+				}
+				.ll-teach-line.up .ll-teach-dot { background: var(--ll-green); }
+				.ll-teach-line.down .ll-teach-dot { background: var(--ll-red); }
+
+				/* Drill-down dialog (rendered outside .ll-wrap, so explicit tokens). */
+				.ll-bd-scope { color: var(--text-muted); font-size: var(--text-sm); margin-bottom: 8px; }
 				.ll-bd-row {
 					display: flex; justify-content: space-between; gap: 12px;
 					padding: 8px 2px; border-bottom: 1px solid var(--border-color);
@@ -194,73 +352,73 @@ class LedgerLab {
 				.ll-bd-row:last-child { border-bottom: none; }
 				.ll-bd-acct { flex: 1 1 auto; }
 				.ll-bd-amt { font-variant-numeric: tabular-nums; font-weight: 600; }
-				.ll-bd-amt.down { color: #dc2626; }
+				.ll-bd-amt.down { color: var(--ll-red, #dc2626); }
 				.ll-bd-total {
 					font-weight: 700; border-top: 2px solid var(--border-color);
 					border-bottom: none; margin-top: 4px; padding-top: 10px;
 				}
 				.ll-bd-empty { padding: 12px 2px; color: var(--text-muted); }
 
-				.ll-scope {
-					display: inline-flex; gap: 0; margin: 4px 0 0;
-					border: 1px solid var(--border-color);
-					border-radius: var(--border-radius, 6px); overflow: hidden;
-				}
-				.ll-scope-tab {
-					border: none; background: transparent; cursor: pointer;
-					padding: 6px 14px; font-size: var(--text-sm); font-weight: 500;
-					color: var(--text-muted); border-right: 1px solid var(--border-color);
-				}
-				.ll-scope-tab:last-child { border-right: none; }
-				.ll-scope-tab:hover { color: var(--text-color); }
-				.ll-scope-tab.active {
-					background: var(--control-bg, var(--bg-light-gray, #f0f0f0));
-					color: var(--text-color); font-weight: 600;
-				}
-
-				.ll-wrap {
-					--ll-green: #16a34a; --ll-red: #dc2626;
-					--ll-green-bg: rgba(34, 197, 94, 0.16);
-					--ll-red-bg: rgba(239, 68, 68, 0.16);
+				@media (prefers-reduced-motion: reduce) {
+					.ll-teach-wrap { transition: none; }
+					.ll-feed-expand .ll-chev { transition: none; }
+					.ll-feed-row.ll-new { animation: none; }
 				}
 			</style>
 			<div class="ll-wrap">
-				<div class="ll-scope" role="tablist">
-					<button class="ll-scope-tab active" data-scope="fy" role="tab">${__("This Fiscal Year")}</button>
-					<button class="ll-scope-tab" data-scope="all" role="tab">${__("All Time")}</button>
+				<div class="ll-toolbar">
+					<div class="ll-scope" role="tablist" aria-label="${__("Time scope")}">
+						<button class="ll-scope-tab active" data-scope="fy" role="tab">${__("This Fiscal Year")}</button>
+						<button class="ll-scope-tab" data-scope="all" role="tab">${__("All Time")}</button>
+					</div>
 				</div>
+
 				<div class="ll-equation">
+					<div class="ll-eq-kicker">${__("The Accounting Equation")}</div>
 					<div class="ll-eq-main">
-						<span class="ll-eq-t">${__("Assets")} ${num("Asset")}</span>
+						${eqterm("Asset", __("Assets"))}
 						<span class="ll-eq-op">=</span>
-						<span class="ll-eq-t">${__("Liabilities")} ${num("Liability")}</span>
+						${eqterm("Liability", __("Liabilities"))}
 						<span class="ll-eq-op">+</span>
-						<span class="ll-eq-t">${__("Equity")} ${num("Equity")}</span>
+						${eqterm("Equity", __("Equity"))}
 						<span class="ll-eq-op">+</span>
-						<span class="ll-eq-t">${__("Net Profit")} ${num("NetProfit")}</span>
+						${eqterm("NetProfit", __("Net Profit"))}
 						<span class="ll-eq-status" data-eq-status></span>
 					</div>
 					<div class="ll-eq-sub">
-						${__("Net Profit")} = ${__("Income")} ${num("Income")} − ${__("Expense")} ${num("Expense")}
+						${__("Net Profit")} = ${__("Income")} <span class="ll-num" data-num="Income">—</span> − ${__("Expense")} <span class="ll-num" data-num="Expense">—</span>
 					</div>
 				</div>
 
-				<div class="ll-section-title">${__("Balance Sheet")}</div>
-				<div class="ll-grid">
-					${box("Asset", __("Assets"))}
-					${box("Liability", __("Liabilities"))}
-					${box("Equity", __("Equity"))}
+				<div class="ll-section bs">
+					<div class="ll-section-head">
+						<span class="ll-section-dot"></span>
+						<span class="ll-section-title">${__("Balance Sheet")}</span>
+					</div>
+					<div class="ll-section-body">
+						${box("Asset", __("Assets"), "bs")}
+						${box("Liability", __("Liabilities"), "bs")}
+						${box("Equity", __("Equity"), "bs")}
+					</div>
 				</div>
 
-				<div class="ll-section-title">${__("Profit & Loss")}</div>
-				<div class="ll-grid">
-					${box("Income", __("Income"))}
-					${box("Expense", __("Expense"))}
-					${box("NetProfit", __("Net Profit"))}
+				<div class="ll-section pl">
+					<div class="ll-section-head">
+						<span class="ll-section-dot"></span>
+						<span class="ll-section-title">${__("Profit & Loss")}</span>
+					</div>
+					<div class="ll-section-body">
+						${box("Income", __("Income"), "pl")}
+						${box("Expense", __("Expense"), "pl")}
+						${box("NetProfit", __("Net Profit"), "pl")}
+					</div>
 				</div>
 
 				<div class="ll-feed">
-					<div class="ll-feed-title">${__("Recent Transactions")}</div>
+					<div class="ll-feed-head-row">
+						<span class="ll-section-dot"></span>
+						<span class="ll-feed-title">${__("Recent Transactions")}</span>
+					</div>
 					<div class="ll-feed-list"></div>
 				</div>
 			</div>
@@ -308,6 +466,18 @@ class LedgerLab {
 				this.open_breakdown(e.currentTarget.getAttribute("data-root"));
 			}
 		});
+
+		// Feed: expand/collapse the per-line teaching panel (delegated, so it
+		// survives the feed being re-rendered on reload).
+		this.$feed.on("click", ".ll-feed-expand", (e) => {
+			const btn = e.currentTarget;
+			const wrap = document.getElementById(btn.getAttribute("aria-controls"));
+			if (!wrap) return;
+			const open = btn.getAttribute("aria-expanded") === "true";
+			btn.setAttribute("aria-expanded", String(!open));
+			wrap.classList.toggle("open", !open);
+			wrap.setAttribute("aria-hidden", String(open));
+		});
 	}
 
 	// Open the account-breakdown dialog for one root-type box, honoring the
@@ -329,9 +499,8 @@ class LedgerLab {
 				const d = this.breakdown_dialog;
 				d.set_title(__("{0} — account breakdown", [label]));
 				d.$body.html(
-					`<div class="ll-bd-scope" style="color:var(--text-muted);font-size:var(--text-sm);margin-bottom:8px;">${frappe.utils.escape_html(
-						this.company
-					)} · ${scope_label}</div>` + this.render_breakdown(rows)
+					`<div class="ll-bd-scope">${frappe.utils.escape_html(this.company)} · ${scope_label}</div>` +
+						this.render_breakdown(rows)
 				);
 				d.show();
 			},
@@ -379,8 +548,9 @@ class LedgerLab {
 		return `/app/query-report/${encodeURIComponent("General Ledger")}?${params.toString()}`;
 	}
 
-	// Re-scope: authoritative refetch + feed reseed, no animation. Used on
-	// company/scope change (and the same path the Refresh action drives).
+	// Re-scope: authoritative refetch + feed reseed, no animation. Clears sticky
+	// impact badges (a fresh scope has no "last impact" yet). Same path the
+	// Refresh action drives.
 	reload() {
 		this.refresh();
 		this.load_feed();
@@ -430,6 +600,11 @@ class LedgerLab {
 	}
 
 	paint_instant() {
+		// Authoritative repaint clears the per-box "last impact" — the new scope
+		// hasn't seen any live events yet.
+		this.lastImpact = {};
+		LL_ALL_BOXES.forEach((root) => this.render_impact(root));
+
 		const values = {
 			...this.boxes,
 			NetProfit: this.boxes.Income - this.boxes.Expense,
@@ -457,7 +632,7 @@ class LedgerLab {
 			this.boxes[rt] = to;
 			this.animate_num(rt, from, to);
 			this.flash_box(rt, deltas[rt] > 0);
-			this.show_delta(rt, deltas[rt]);
+			this.set_impact(rt, deltas[rt], data);
 		});
 
 		// Net Profit is derived: Income − Expense.
@@ -466,7 +641,7 @@ class LedgerLab {
 		if (Math.abs(npTo - npFrom) >= 0.005) {
 			this.animate_num("NetProfit", npFrom, npTo);
 			this.flash_box("NetProfit", npTo > npFrom);
-			this.show_delta("NetProfit", npTo - npFrom);
+			this.set_impact("NetProfit", npTo - npFrom, data);
 		}
 
 		this.update_equation();
@@ -513,19 +688,45 @@ class LedgerLab {
 		el.classList.remove("flash-up", "flash-down");
 		void el.offsetWidth; // restart the animation
 		el.classList.add(cls);
-		setTimeout(() => el.classList.remove(cls), 950);
+		setTimeout(() => el.classList.remove(cls), LL_FLASH_MS + 50);
 	}
 
-	show_delta(root, delta) {
-		if (ll_reduced_motion()) return;
-		const chip = this.page.main.find(`.ll-box[data-root="${root}"] .ll-box-delta`).get(0);
-		if (!chip) return;
-		const up = delta > 0;
-		chip.textContent = (up ? "+" : "−") + format_currency(Math.abs(delta), this.currency);
-		chip.className = "ll-box-delta " + (up ? "up" : "down");
-		void chip.offsetWidth;
-		chip.classList.add("show");
-		setTimeout(() => chip.classList.remove("show"), 1650);
+	// Record the most recent event that moved this box and render its persistent
+	// badge. Renders regardless of reduced motion — it's information, not motion.
+	set_impact(root, delta, data) {
+		this.lastImpact[root] = {
+			delta,
+			voucher_type: data.voucher_type,
+			voucher_no: data.voucher_no,
+			cancelled: !!data.is_cancelled,
+			ts: Date.now(),
+		};
+		this.render_impact(root);
+	}
+
+	render_impact(root) {
+		const $el = this.page.main.find(`.ll-box-impact[data-impact="${root}"]`);
+		if (!$el.length) return;
+		const imp = this.lastImpact[root];
+		if (!imp) {
+			$el.empty();
+			return;
+		}
+		const up = imp.delta >= 0;
+		const amount = format_currency(Math.abs(imp.delta), this.currency);
+		const src = imp.voucher_no
+			? __("from {0} {1}", [__(imp.voucher_type), imp.voucher_no])
+			: "";
+		const caption = [src, ll_rel_time(imp.ts)].filter(Boolean).join(" · ");
+		$el.html(`
+			<span class="ll-impact-delta ${up ? "up" : "down"}">${up ? "▲" : "▼"} ${up ? "+" : "−"}${amount}</span>
+			<span class="ll-impact-cap">${frappe.utils.escape_html(caption)}</span>
+		`);
+	}
+
+	// Refresh just the relative-time captions on the sticky badges.
+	tick_impact_times() {
+		Object.keys(this.lastImpact).forEach((root) => this.render_impact(root));
 	}
 
 	load_feed() {
@@ -582,14 +783,67 @@ class LedgerLab {
 			})
 			.join("");
 
+		const teach_id = `ll-teach-${++this._seq}`;
+		const teach = this.render_teach(voucher);
+
 		return `
 			<div class="ll-feed-row ${cancelled ? "is-cancelled" : ""}" data-voucher="${frappe.utils.escape_html(
 				voucher.voucher_no
 			)}">
-				<div class="ll-feed-voucher">
-					<a href="${url}">${title}</a>${badge}
+				<div class="ll-feed-head">
+					<div class="ll-feed-voucher"><a href="${url}">${title}</a>${badge}</div>
+					<button class="ll-feed-expand" aria-expanded="false" aria-controls="${teach_id}"
+						aria-label="${__("Explain this transaction")}" title="${__("Explain this transaction")}">
+						<svg class="ll-chev" width="14" height="14" viewBox="0 0 24 24" fill="none"
+							stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+							<polyline points="6 9 12 15 18 9"></polyline>
+						</svg>
+					</button>
 				</div>
-				${lines}
+				<div class="ll-feed-lines">${lines}</div>
+				<div class="ll-teach-wrap" id="${teach_id}" aria-hidden="true">
+					<div class="ll-teach-inner">${teach}</div>
+				</div>
 			</div>`;
+	}
+
+	// Plain-English teaching panel: an optional voucher-type summary plus, for
+	// each line, "{Account} ({Root Type}) increased|decreased by {amount}".
+	render_teach(voucher) {
+		const cancelled = !!voucher.is_cancelled;
+		let summary = "";
+		if (cancelled) {
+			summary = __("This entry was cancelled — the lines below reverse its original effect.");
+		} else if (LL_VOUCHER_SUMMARY[voucher.voucher_type]) {
+			summary = LL_VOUCHER_SUMMARY[voucher.voucher_type];
+		}
+		const summary_html = summary
+			? `<div class="ll-teach-summary">${frappe.utils.escape_html(summary)}</div>`
+			: "";
+
+		const lines = (voucher.lines || [])
+			.map((line) => {
+				const delta = ll_line_delta(line.root_type, line.debit, line.credit);
+				const up = delta >= 0;
+				const gross = flt(line.debit) > 0 ? line.debit : line.credit;
+				const dir = up ? __("increased") : __("decreased");
+				// Single i18n template with root-type & direction as interpolated
+				// tokens so translations stay grammatical. Account is pre-escaped;
+				// direction is wrapped in <strong>; amount comes from format_currency.
+				const clause = __("{0} ({1}) {2} by {3}", [
+					frappe.utils.escape_html(line.account),
+					__(line.root_type || ""),
+					`<strong>${dir}</strong>`,
+					format_currency(Math.abs(gross), this.currency),
+				]);
+				return `
+					<div class="ll-teach-line ${up ? "up" : "down"}">
+						<span class="ll-teach-dot"></span>
+						<span>${clause}</span>
+					</div>`;
+			})
+			.join("");
+
+		return `<div class="ll-teach">${summary_html}${lines}</div>`;
 	}
 }

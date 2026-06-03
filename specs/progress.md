@@ -10,7 +10,7 @@ Repo: <https://github.com/BuildWithHussain/ledger_lab> (default branch `develop`
 | 3 — Teaching layer & polish | ✅ Done | agent-browser (flash up/down, count-up, reduced-motion, no client drift) |
 | 4 — Controls: company & time scope | ✅ Done | agent-browser (scope toggle re-scopes 3k↔11k; in-FY event flashes, out-of-FY event gated out) |
 | 5 — Account-level drill-down | ✅ Done | agent-browser (Assets/Income dialogs reconcile to box; FY↔All-Time re-scope; GL report links) |
-| 6 — Visual redesign, persistent impact & per-line teaching | 📝 Spec'd | — |
+| 6 — Visual redesign, persistent impact & per-line teaching | ✅ Done | agent-browser (light+dark redesign; sticky badges persist/update-in-place/reset; expand teaching; cancel→red reversal; reduced-motion) |
 
 Commit `1921848` ("feat: Live ledger impact dashboard (phases 1-3)") covers phases 1–3.
 
@@ -170,7 +170,70 @@ direction the root-type box can't show.
 - Click **Income** → lists **Service 11,000** (credit-normal, positive) = Income box.
 - Dialog reuse confirmed: repeated drill-downs keep exactly **one** modal in the DOM.
 
+## What's built (phase 6)
+
+Pure frontend/UX phase — **no backend changes**. All in
+`…/page/ledger_lab/ledger_lab.js` (scoped `<style>` + markup + controller).
+
+- **Design refresh.** A "financial-instrument" layout: a hero **equation bar** (accent rail,
+  `THE ACCOUNTING EQUATION` kicker, subtle accent gradient, status pill) at the top; **Balance
+  Sheet** and **P&L** rendered as two clearly distinct, dotted, tinted-panel groups; refined
+  type scale, larger tabular-num box values, cleaner feed. Drill-down (clickable boxes, hover
+  "View accounts →", `:focus-visible`) and the derived **Net Profit** box (now tagged
+  *Derived*, not clickable) are preserved.
+- **Sticky last-impact badges.** Each box carries a persistent badge of the most recent event
+  that moved it — `▲ +₹500 · from Journal Entry … · just now` — direction-colored, updated in
+  place by the latest event, cleared on any authoritative reload (company/scope change, manual
+  Refresh). Net Profit gets the same badge from its Income−Expense delta. A 30s timer refreshes
+  the relative-time captions. The flash is lengthened (~0.9s → **2s**, stronger inset ring); the
+  old transient `ll-box-delta` chip is **removed** (superseded by the badge).
+- **Per-line teaching.** Each feed row has an expand toggle (`button`, `aria-expanded`,
+  `aria-controls`; chevron) revealing an optional voucher-type summary plus, per line,
+  `{Account} ({Root Type}) increased|decreased by {amount}` — direction from `ll_line_delta`,
+  i18n template with interpolated tokens. Cancelled vouchers read as a reversal (decreases +
+  "this entry was cancelled…"). Collapse uses the `grid-template-rows 0fr→1fr` trick, disabled
+  under `prefers-reduced-motion`.
+
+## Deviations from the phase-6 spec (reconciled)
+
+16. **Accent is a fixed blue (`#3b82f6`), not `var(--primary)`.** The spec suggested reading the
+    Frappe accent token. On this bench `--primary` resolves to a near-black (`#171717`) that does
+    **not** flip for dark mode, so an accent keyed to it vanishes on the dark surface. We use a
+    fixed blue with sufficient contrast on both light and dark backgrounds (the dark-mode-safe
+    story the spec requires for fixed colors). Green/red direction tints and all other surfaces
+    still ride Frappe theme tokens / `color-mix()`.
+
+17. **Relative time is computed client-side from a captured epoch**, not via
+    `frappe.datetime.comment_when`/`prettyDate`. Those apply `convert_to_user_tz` to the input
+    while comparing against an already-user-tz "now", double-shifting a freshly-stamped client
+    timestamp (often yielding an empty string). A tiny `ll_rel_time(ms)` helper off `Date.now()`
+    is tz-safe and dependency-free.
+
+18. **Reduced motion keeps the badge AND applies values instantly.** Count-up and flash are
+    suppressed (existing `ll_reduced_motion()` guard); `set_impact`/`render_impact` have no motion
+    guard, so the sticky badge and expandable teaching still render — a net win for reduced-motion
+    users, who previously got nothing lingering.
+
+## Phase-6 verification (agent-browser, `ledger.localhost`)
+
+- **Redesign** renders in **light and dark** (verified by forcing `data-theme`): equation hero,
+  blue accent rail/kicker/section-dots/active-scope-tab, distinct BS vs P&L panels, `✓ Balanced`
+  pill — all legible in both themes after the accent fix (deviation #16).
+- **Submit** JE (Dr Cash 500 / Cr Service 500, in-FY) → **Assets / Income / Net Profit** count up
+  and grow a sticky badge `▲ +₹500 · from Journal Entry ACC-JV-2026-00005`; badge **persists**
+  after the flash; untouched boxes (Liabilities/Equity/Expense) stay blank.
+- **Second** JE (+100) → the three badges **update in place** to `…00006`; untouched boxes keep
+  prior state.
+- **Cancel** `…00006` → boxes count **down**, badges flip **red** `▼ −₹100`, feed prepends the
+  muted **Cancelled** reversal row; expanding it reads *"This entry was cancelled — …"* with
+  `… decreased by ₹100` lines (red dots).
+- **Expand** any feed row → per-line plain English (`Cash - BWH (Asset) increased by ₹…`),
+  `aria-expanded` toggles, chevron rotates.
+- **Scope** FY → All Time → re-aggregates (3.5k→21.5k all-time) and **clears all badges**.
+- **Reduced motion** (`set media reduced-motion`) → values apply instantly (no count-up/flash),
+  **but** the sticky badge and the expand-teaching panel still render and work.
+
 ## Next
 
-- **Phase 6** — visual redesign + persistent "last impact" badges + expandable per-line
-  teaching. See [phase-6-design-and-teaching.md](phase-6-design-and-teaching.md).
+- All planned tracer-bullet phases (1–6) are complete and verified. Future work (e.g. curated
+  voucher-type narratives, multi-company exercises) would be new specs.
