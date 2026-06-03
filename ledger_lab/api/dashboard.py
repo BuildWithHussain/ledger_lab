@@ -1,25 +1,47 @@
 import frappe
 from frappe import _
-from frappe.utils import flt, nowdate
+from frappe.query_builder import Criterion, DocType
+from frappe.query_builder.functions import Max, Sum
+from frappe.utils import cint, flt, nowdate
 
-# The five GL root types, displayed as the five boxes on the dashboard.
-ROOT_TYPES = ("Asset", "Liability", "Equity", "Income", "Expense")
+from ledger_lab.accounting import ROOT_TYPES, get_account_root_types, get_natural_balance
 
-# Debit-normal root types: their balance grows on the debit side.
-# The rest (Liability, Equity, Income) are credit-normal. This sign
-# convention makes every box read as a positive number normally and keeps
-# the accounting identities honest (Assets = Liabilities + Equity, etc.).
-DEBIT_NORMAL = {"Asset", "Expense"}
+DEFAULT_RECENT_VOUCHER_LIMIT = 15
+MAX_RECENT_VOUCHER_LIMIT = 50
+VALID_SCOPES = frozenset({"fy", "all"})
 
 
 def _resolve_company(company: str | None) -> str:
+	company = company.strip() if company else None
 	if not company:
 		company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
 			"Global Defaults", "default_company"
 		)
 	if not company:
 		frappe.throw(_("No company found. Please set a default company."))
+
+	if not frappe.db.exists("Company", company):
+		frappe.throw(_("Company {0} does not exist.").format(company))
+
+	frappe.has_permission("Company", ptype="read", doc=company, throw=True)
 	return company
+
+
+def _validate_accounting_read_permission() -> None:
+	frappe.has_permission("GL Entry", ptype="read", throw=True)
+	frappe.has_permission("Account", ptype="read", throw=True)
+
+
+def _normalize_scope(scope: str | None) -> str:
+	scope = (scope or "fy").strip().lower()
+	if scope not in VALID_SCOPES:
+		frappe.throw(_("Unknown scope: {0}").format(scope))
+
+	return scope
+
+
+def _clamp_limit(limit: int | None) -> int:
+	return max(1, min(cint(limit) or DEFAULT_RECENT_VOUCHER_LIMIT, MAX_RECENT_VOUCHER_LIMIT))
 
 
 def _date_range(company: str, scope: str) -> tuple[str | None, str | None]:
@@ -35,16 +57,34 @@ def _date_range(company: str, scope: str) -> tuple[str | None, str | None]:
 		return None, None
 	from erpnext.accounts.utils import get_fiscal_year
 
-	try:
-		fy = get_fiscal_year(nowdate(), company=company, as_dict=True)
-	except Exception:
-		# No fiscal year configured for this date/company — fall back to all-time
+	fy = get_fiscal_year(nowdate(), company=company, as_dict=True, raise_on_missing=False)
+	if not fy:
+		# No fiscal year configured for this date/company; fall back to all-time
 		# rather than erroring out the whole dashboard.
 		return None, None
+
 	return str(fy.year_start_date), str(fy.year_end_date)
 
 
-@frappe.whitelist()
+def _get_request_context(company: str | None, scope: str) -> tuple[str, str, str | None, str | None]:
+	company = _resolve_company(company)
+	_validate_accounting_read_permission()
+	scope = _normalize_scope(scope)
+	start, end = _date_range(company, scope)
+
+	return company, scope, start, end
+
+
+def _apply_posting_date_range(query, gl_entry, start: str | None, end: str | None):
+	if start:
+		query = query.where(gl_entry.posting_date >= start)
+	if end:
+		query = query.where(gl_entry.posting_date <= end)
+
+	return query
+
+
+@frappe.whitelist(methods=["GET", "POST"])
 def get_balances(company: str | None = None, scope: str = "fy") -> dict:
 	"""Aggregate GL Entry balances grouped by Account root_type.
 
@@ -52,34 +92,31 @@ def get_balances(company: str | None = None, scope: str = "fy") -> dict:
 	natural-sign balances so each box shows a positive number under normal
 	conditions, plus the active date range so the client can gate realtime events.
 	"""
-	company = _resolve_company(company)
-	start, end = _date_range(company, scope)
+	company, scope, start, end = _get_request_context(company, scope)
+	gl_entry = DocType("GL Entry")
+	account = DocType("Account")
 
-	rows = frappe.db.sql(
-		"""
-		SELECT acc.root_type AS root_type,
-		       SUM(gle.debit) AS debit,
-		       SUM(gle.credit) AS credit
-		FROM `tabGL Entry` gle
-		INNER JOIN `tabAccount` acc ON acc.name = gle.account
-		WHERE gle.company = %(company)s
-		  AND gle.is_cancelled = 0
-		  AND (%(start)s IS NULL OR gle.posting_date >= %(start)s)
-		  AND (%(end)s IS NULL OR gle.posting_date <= %(end)s)
-		GROUP BY acc.root_type
-		""",
-		{"company": company, "start": start, "end": end},
-		as_dict=True,
+	query = (
+		frappe.qb.from_(gl_entry)
+		.inner_join(account)
+		.on(account.name == gl_entry.account)
+		.select(
+			account.root_type.as_("root_type"),
+			Sum(gl_entry.debit).as_("debit"),
+			Sum(gl_entry.credit).as_("credit"),
+		)
+		.where(
+			(gl_entry.company == company)
+			& (gl_entry.is_cancelled == 0)
+			& (account.root_type.isin(ROOT_TYPES))
+		)
+		.groupby(account.root_type)
 	)
+	rows = _apply_posting_date_range(query, gl_entry, start, end).run(as_dict=True)
 
 	boxes = {rt: 0.0 for rt in ROOT_TYPES}
-	for r in rows:
-		if r.root_type not in boxes:
-			continue
-		if r.root_type in DEBIT_NORMAL:
-			boxes[r.root_type] = flt(r.debit) - flt(r.credit)
-		else:
-			boxes[r.root_type] = flt(r.credit) - flt(r.debit)
+	for row in rows:
+		boxes[row.root_type] = get_natural_balance(row.root_type, row.debit, row.credit)
 
 	return {
 		"company": company,
@@ -90,7 +127,7 @@ def get_balances(company: str | None = None, scope: str = "fy") -> dict:
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_recent_vouchers(company: str | None = None, limit: int = 15, scope: str = "fy") -> list[dict]:
 	"""Most recent vouchers (newest first) with their full double-entry lines.
 
@@ -98,38 +135,41 @@ def get_recent_vouchers(company: str | None = None, limit: int = 15, scope: str 
 	lines and each line's root_type so the client can render and color them.
 	`scope` ("fy"/"all") matches get_balances so the feed and boxes agree.
 	"""
-	company = _resolve_company(company)
-	limit = min(int(limit or 15), 50)
-	start, end = _date_range(company, scope)
+	company, _scope, start, end = _get_request_context(company, scope)
+	limit = _clamp_limit(limit)
+	gl_entry = DocType("GL Entry")
 
-	vouchers = frappe.db.sql(
-		"""
-		SELECT voucher_type, voucher_no,
-		       MAX(posting_date) AS posting_date,
-		       MAX(creation) AS creation
-		FROM `tabGL Entry`
-		WHERE company = %(company)s AND is_cancelled = 0
-		  AND (%(start)s IS NULL OR posting_date >= %(start)s)
-		  AND (%(end)s IS NULL OR posting_date <= %(end)s)
-		GROUP BY voucher_type, voucher_no
-		ORDER BY MAX(creation) DESC
-		LIMIT %(limit)s
-		""",
-		{"company": company, "limit": limit, "start": start, "end": end},
-		as_dict=True,
+	voucher_query = (
+		frappe.qb.from_(gl_entry)
+		.select(
+			gl_entry.voucher_type,
+			gl_entry.voucher_no,
+			Max(gl_entry.posting_date).as_("posting_date"),
+			Max(gl_entry.creation).as_("creation"),
+		)
+		.where((gl_entry.company == company) & (gl_entry.is_cancelled == 0))
+		.groupby(gl_entry.voucher_type, gl_entry.voucher_no)
+		.orderby(Max(gl_entry.creation), order=frappe.qb.desc)
+		.limit(limit)
 	)
+	vouchers = _apply_posting_date_range(voucher_query, gl_entry, start, end).run(as_dict=True)
 	if not vouchers:
 		return []
 
-	voucher_nos = list({v.voucher_no for v in vouchers})
-	lines = frappe.get_all(
-		"GL Entry",
-		filters={"company": company, "is_cancelled": 0, "voucher_no": ["in", voucher_nos]},
-		fields=["voucher_type", "voucher_no", "account", "debit", "credit"],
-		order_by="debit desc",
+	voucher_conditions = [
+		(gl_entry.voucher_type == voucher.voucher_type) & (gl_entry.voucher_no == voucher.voucher_no)
+		for voucher in vouchers
+	]
+	lines = (
+		frappe.qb.from_(gl_entry)
+		.select(gl_entry.voucher_type, gl_entry.voucher_no, gl_entry.account, gl_entry.debit, gl_entry.credit)
+		.where(
+			(gl_entry.company == company) & (gl_entry.is_cancelled == 0) & Criterion.any(voucher_conditions)
+		)
+		.orderby(gl_entry.debit, order=frappe.qb.desc)
+		.run(as_dict=True)
 	)
-
-	root_map = _root_type_map([line.account for line in lines])
+	root_map = get_account_root_types(line.account for line in lines)
 
 	by_voucher = {}
 	for line in lines:
@@ -153,7 +193,7 @@ def get_recent_vouchers(company: str | None = None, limit: int = 15, scope: str 
 	]
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_account_breakdown(company: str, root_type: str, scope: str = "fy") -> list[dict]:
 	"""Per-account balances making up one root-type box, for the company + scope.
 
@@ -164,51 +204,37 @@ def get_account_breakdown(company: str, root_type: str, scope: str = "fy") -> li
 	"""
 	if root_type not in ROOT_TYPES:
 		frappe.throw(_("Unknown root type: {0}").format(root_type))
-	company = _resolve_company(company)
-	start, end = _date_range(company, scope)
+	company, _scope, start, end = _get_request_context(company, scope)
+	gl_entry = DocType("GL Entry")
+	account = DocType("Account")
 
-	rows = frappe.db.sql(
-		"""
-		SELECT gle.account AS account,
-		       SUM(gle.debit) AS debit,
-		       SUM(gle.credit) AS credit
-		FROM `tabGL Entry` gle
-		INNER JOIN `tabAccount` acc ON acc.name = gle.account
-		WHERE gle.company = %(company)s
-		  AND gle.is_cancelled = 0
-		  AND acc.root_type = %(root_type)s
-		  AND acc.is_group = 0
-		  AND (%(start)s IS NULL OR gle.posting_date >= %(start)s)
-		  AND (%(end)s IS NULL OR gle.posting_date <= %(end)s)
-		GROUP BY gle.account
-		""",
-		{"company": company, "root_type": root_type, "start": start, "end": end},
-		as_dict=True,
+	query = (
+		frappe.qb.from_(gl_entry)
+		.inner_join(account)
+		.on(account.name == gl_entry.account)
+		.select(
+			gl_entry.account.as_("account"),
+			Sum(gl_entry.debit).as_("debit"),
+			Sum(gl_entry.credit).as_("credit"),
+		)
+		.where(
+			(gl_entry.company == company)
+			& (gl_entry.is_cancelled == 0)
+			& (account.root_type == root_type)
+			& (account.is_group == 0)
+		)
+		.groupby(gl_entry.account)
 	)
+	rows = _apply_posting_date_range(query, gl_entry, start, end).run(as_dict=True)
 
-	debit_normal = root_type in DEBIT_NORMAL
 	out = []
-	for r in rows:
-		balance = flt(r.debit) - flt(r.credit) if debit_normal else flt(r.credit) - flt(r.debit)
+	for row in rows:
+		balance = get_natural_balance(root_type, row.debit, row.credit)
 		if abs(balance) < 0.005:
 			# Fully offset within scope (e.g. an account that netted to zero) —
 			# omit so the list shows only accounts that actually carry the total.
 			continue
-		out.append({"account": r.account, "balance": balance})
+		out.append({"account": row.account, "balance": balance})
 
 	out.sort(key=lambda a: abs(a["balance"]), reverse=True)
 	return out
-
-
-def _root_type_map(accounts: list[str]) -> dict:
-	unique = list({a for a in accounts if a})
-	if not unique:
-		return {}
-	return dict(
-		frappe.get_all(
-			"Account",
-			filters={"name": ["in", unique]},
-			fields=["name", "root_type"],
-			as_list=True,
-		)
-	)
