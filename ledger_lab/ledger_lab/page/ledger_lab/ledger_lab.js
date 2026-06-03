@@ -95,7 +95,11 @@ class LedgerLab {
 			<div class="ll-box ${kind} ${clickable ? "ll-clickable" : "ll-derived"}" data-root="${root}"${
 				clickable ? ' role="button" tabindex="0"' : ""
 			}>
-				${clickable ? `<div class="ll-box-hint">${__("View accounts")} →</div>` : `<div class="ll-box-hint ll-derived-tag">${__("Derived")}</div>`}
+				${
+					clickable
+						? `<div class="ll-box-hint">${__("View accounts")} →</div>`
+						: `<div class="ll-box-hint ll-derived-tag">${__("Derived")}</div>`
+				}
 				<div class="ll-box-label">${label}</div>
 				<div class="ll-box-value"><span class="ll-num" data-num="${root}">—</span></div>
 				<div class="ll-box-impact" data-impact="${root}"></div>
@@ -386,7 +390,9 @@ class LedgerLab {
 						<span class="ll-eq-status" data-eq-status></span>
 					</div>
 					<div class="ll-eq-sub">
-						${__("Net Profit")} = ${__("Income")} <span class="ll-num" data-num="Income">—</span> − ${__("Expense")} <span class="ll-num" data-num="Expense">—</span>
+						${__("Net Profit")} = ${__("Income")} <span class="ll-num" data-num="Income">—</span> − ${__(
+			"Expense"
+		)} <span class="ll-num" data-num="Expense">—</span>
 					</div>
 				</div>
 
@@ -499,8 +505,9 @@ class LedgerLab {
 				const d = this.breakdown_dialog;
 				d.set_title(__("{0} — account breakdown", [label]));
 				d.$body.html(
-					`<div class="ll-bd-scope">${frappe.utils.escape_html(this.company)} · ${scope_label}</div>` +
-						this.render_breakdown(rows)
+					`<div class="ll-bd-scope">${frappe.utils.escape_html(
+						this.company
+					)} · ${scope_label}</div>` + this.render_breakdown(rows)
 				);
 				d.show();
 			},
@@ -517,13 +524,8 @@ class LedgerLab {
 				const neg = flt(a.balance) < 0;
 				return `
 					<div class="ll-bd-row">
-						<a class="ll-bd-acct" href="${this.gl_url(a.account)}">${frappe.utils.escape_html(
-							a.account
-						)}</a>
-						<span class="ll-bd-amt ${neg ? "down" : ""}">${format_currency(
-							a.balance,
-							this.currency
-						)}</span>
+						<a class="ll-bd-acct" href="${this.gl_url(a.account)}">${frappe.utils.escape_html(a.account)}</a>
+						<span class="ll-bd-amt ${neg ? "down" : ""}">${format_currency(a.balance, this.currency)}</span>
 					</div>`;
 			})
 			.join("");
@@ -655,7 +657,11 @@ class LedgerLab {
 		const balanced = Math.abs(lhs - rhs) < 0.005;
 		const $status = this.page.main.find("[data-eq-status]");
 		$status
-			.text(balanced ? "✓ " + __("Balanced") : "⚠ " + __("Off by {0}", [format_currency(lhs - rhs, this.currency)]))
+			.text(
+				balanced
+					? "✓ " + __("Balanced")
+					: "⚠ " + __("Off by {0}", [format_currency(lhs - rhs, this.currency)])
+			)
 			.toggleClass("ok", balanced)
 			.toggleClass("warn", !balanced);
 	}
@@ -719,7 +725,9 @@ class LedgerLab {
 			: "";
 		const caption = [src, ll_rel_time(imp.ts)].filter(Boolean).join(" · ");
 		$el.html(`
-			<span class="ll-impact-delta ${up ? "up" : "down"}">${up ? "▲" : "▼"} ${up ? "+" : "−"}${amount}</span>
+			<span class="ll-impact-delta ${up ? "up" : "down"}">${up ? "▲" : "▼"} ${
+			up ? "+" : "−"
+		}${amount}</span>
 			<span class="ll-impact-cap">${frappe.utils.escape_html(caption)}</span>
 		`);
 	}
@@ -759,7 +767,9 @@ class LedgerLab {
 		const url = `/app/${frappe.router.slug(voucher.voucher_type)}/${encodeURIComponent(
 			voucher.voucher_no
 		)}`;
-		const title = `${__(voucher.voucher_type)} ${frappe.utils.escape_html(voucher.voucher_no)}`;
+		const title = `${__(voucher.voucher_type)} ${frappe.utils.escape_html(
+			voucher.voucher_no
+		)}`;
 		const cancelled = !!voucher.is_cancelled;
 		const badge = cancelled
 			? `<span class="ll-badge-cancelled">${__("Cancelled")}</span>`
@@ -787,9 +797,9 @@ class LedgerLab {
 		const teach = this.render_teach(voucher);
 
 		return `
-			<div class="ll-feed-row ${cancelled ? "is-cancelled" : ""}" data-voucher="${frappe.utils.escape_html(
-				voucher.voucher_no
-			)}">
+			<div class="ll-feed-row ${
+				cancelled ? "is-cancelled" : ""
+			}" data-voucher="${frappe.utils.escape_html(voucher.voucher_no)}">
 				<div class="ll-feed-head">
 					<div class="ll-feed-voucher"><a href="${url}">${title}</a>${badge}</div>
 					<button class="ll-feed-expand" aria-expanded="false" aria-controls="${teach_id}"
@@ -813,7 +823,9 @@ class LedgerLab {
 		const cancelled = !!voucher.is_cancelled;
 		let summary = "";
 		if (cancelled) {
-			summary = __("This entry was cancelled — the lines below reverse its original effect.");
+			summary = __(
+				"This entry was cancelled — the lines below reverse its original effect."
+			);
 		} else if (LL_VOUCHER_SUMMARY[voucher.voucher_type]) {
 			summary = LL_VOUCHER_SUMMARY[voucher.voucher_type];
 		}

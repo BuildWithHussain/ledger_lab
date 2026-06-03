@@ -1,8 +1,13 @@
 import frappe
 from frappe.utils import flt
 
+from ledger_lab.accounting import get_account_root_types
 
-def collect_gl_entry(doc, method=None):
+BUFFER_FLAG = "ledger_lab_gle_buffer"
+EVENT_NAME = "ledger_lab_gl_posted"
+
+
+def collect_gl_entry(doc, method: str | None = None) -> None:
 	"""Buffer each posted GL line, then publish ONE event per voucher on commit.
 
 	GL Entries are created one line at a time within a voucher's submit. Publishing
@@ -15,9 +20,13 @@ def collect_gl_entry(doc, method=None):
 	those so the dashboard updates live on cancel — the client refetches balances
 	(which exclude cancelled entries) and shows a reversal row in the feed.
 	"""
-	buffer = frappe.flags.ledger_lab_gle_buffer
+	if not getattr(doc, "company", None) or not getattr(doc, "voucher_no", None):
+		return
+
+	buffer = frappe.flags.get(BUFFER_FLAG)
 	if buffer is None:
-		buffer = frappe.flags.ledger_lab_gle_buffer = []
+		buffer = []
+		frappe.flags[BUFFER_FLAG] = buffer
 		# Runs once the transaction actually commits, so rolled-back postings
 		# never reach the dashboard. The CallbackManager drains itself after
 		# running, hence we re-register (via the None check) for the next commit.
@@ -37,27 +46,21 @@ def collect_gl_entry(doc, method=None):
 	)
 
 
-def flush_gl_entries():
+def flush_gl_entries() -> None:
 	"""Group the buffered lines by voucher and publish one event per voucher."""
-	buffer = frappe.flags.ledger_lab_gle_buffer
 	# Clear immediately so a subsequent commit in the same request re-registers.
-	frappe.flags.ledger_lab_gle_buffer = None
+	buffer = frappe.flags.pop(BUFFER_FLAG, None)
 	if not buffer:
 		return
 
 	# Resolve root_type for every account in one query.
-	accounts = list({row["account"] for row in buffer})
-	root_map = dict(
-		frappe.get_all(
-			"Account",
-			filters={"name": ["in", accounts]},
-			fields=["name", "root_type"],
-			as_list=True,
-		)
-	)
+	root_map = get_account_root_types(row.get("account") for row in buffer)
 
 	by_voucher = {}
 	for row in buffer:
+		if not row.get("voucher_no") or not row.get("account"):
+			continue
+
 		key = (row["company"], row["voucher_type"], row["voucher_no"])
 		group = by_voucher.setdefault(key, {"lines": [], "posting_date": row["posting_date"]})
 		group["lines"].append(
@@ -75,7 +78,7 @@ def flush_gl_entries():
 		# A reversal-only batch (every line cancelled) means the voucher was cancelled.
 		is_cancelled = all(line["is_cancelled"] for line in lines)
 		frappe.publish_realtime(
-			"ledger_lab_gl_posted",
+			EVENT_NAME,
 			{
 				"company": company,
 				"voucher_type": voucher_type,
