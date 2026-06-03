@@ -3,6 +3,10 @@
 **Goal:** let learners choose which company's ledger they watch and switch the balances
 between **This Fiscal Year** and **All Time**.
 
+> **Carried over:** realtime **company filtering** and `frappe.realtime.off(...)` re-bind safety
+> already landed in phases 1–3 (the client ignores events whose `company` ≠ selected). What's
+> genuinely new here is the **scope** dimension (FY/All-Time) and the **company dropdown UI**.
+
 ## In scope
 - **Company dropdown** in the page header (Link → Company), default = `frappe.defaults.get_default("company")`. Changing it re-aggregates and re-seeds the feed.
 - **Scope tabs / toggle:** `This Fiscal Year` (default) vs `All Time`.

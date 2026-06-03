@@ -21,16 +21,20 @@ count-up, Dr/Cr tags, grouped layout, equation bar, drill-down.
 - `ledger_lab/ledger_lab/page/ledger_lab/__init__.py` — empty.
 - `ledger_lab/ledger_lab/page/ledger_lab/ledger_lab.json` — Page fixture (`name: "ledger-lab"`, `module: "Ledger Lab"`, `standard: "Yes"`, roles: Accounts User/Manager). Model on `erpnext/erpnext/stock/page/warehouse_capacity_summary/`.
 - `ledger_lab/ledger_lab/page/ledger_lab/ledger_lab.js` — `frappe.pages["ledger-lab"].on_page_load`: build page, render 5 boxes from a single `frappe.call` to `get_balances`, and `frappe.realtime.on("ledger_lab_gl_posted", () => refetch())`. Plain inline markup, no styling beyond minimal.
-- `ledger_lab/ledger_lab/api/__init__.py` — empty.
-- `ledger_lab/ledger_lab/api/dashboard.py` — `get_balances(company: str = None) -> dict` (typed, whitelisted). Default `company` to `frappe.defaults.get_user_default("Company")`. Returns `{company, boxes: {Asset, Liability, Equity, Income, Expense}, currency}` using the sign convention from plan.md (Asset/Expense = Dr−Cr; Liability/Equity/Income = Cr−Dr). Filter `is_cancelled = 0`.
-- `ledger_lab/ledger_lab/realtime/__init__.py` — empty.
-- `ledger_lab/ledger_lab/realtime/gl_entry.py` — `notify_gl_entry(doc, method=None)`: if `doc.is_cancelled` or `doc.get_doc_before_save() is not None`, return; else `frappe.publish_realtime("ledger_lab_gl_posted", {"company": doc.company}, after_commit=True)`. (Bare per-line publish is fine for phase 1; phase 2 replaces it with per-voucher buffering.)
+- `ledger_lab/api/__init__.py` — empty.
+- `ledger_lab/api/dashboard.py` — `get_balances(company: str | None = None) -> dict` (typed, whitelisted). Default `company` to `frappe.defaults.get_user_default("Company")` → Global Defaults fallback. Returns `{company, boxes: {Asset, Liability, Equity, Income, Expense}, currency}` using the sign convention from plan.md (Asset/Expense = Dr−Cr; Liability/Equity/Income = Cr−Dr). Filter `is_cancelled = 0`.
+- `ledger_lab/realtime/__init__.py` — empty.
+- `ledger_lab/realtime/gl_entry.py` — `notify_gl_entry(doc, method=None)`: if `doc.is_cancelled`, return; else `frappe.publish_realtime("ledger_lab_gl_posted", {"company": doc.company}, after_commit=True)`. (Bare per-line publish is fine for phase 1; phase 2 replaces it with per-voucher buffering — and renames the fn to `collect_gl_entry`.)
+
+> **As built:** the hook fires on **`after_insert`** (fires once per GL line at creation —
+> clean and guard-free), not `on_update`. The dotted path is `ledger_lab.realtime.gl_entry…`
+> (package root is `ledger_lab/ledger_lab/`), not `ledger_lab.ledger_lab.realtime…`.
 
 **Modified:**
 - `ledger_lab/hooks.py` — add:
   ```python
   doc_events = {
-      "GL Entry": {"on_update": "ledger_lab.ledger_lab.realtime.gl_entry.notify_gl_entry"},
+      "GL Entry": {"after_insert": "ledger_lab.realtime.gl_entry.notify_gl_entry"},
   }
   ```
 

@@ -30,12 +30,23 @@ A static balance report is NOT a slice of this feature — the tracer bullet inc
 
 Build in order. Each phase ends with an acceptance test you can run before moving on.
 
+**Status:** phases 1–3 are done and verified — see [progress.md](progress.md) for status, what's
+built, and the deviations we discovered while coding (now reconciled into the specs below).
+
+## Layout & paths (as built)
+
+- App python package root is `ledger_lab/ledger_lab/`, so dotted paths are
+  `ledger_lab.api.dashboard` and `ledger_lab.realtime.gl_entry`.
+- The Desk Page lives under the **module** folder:
+  `ledger_lab/ledger_lab/ledger_lab/page/ledger_lab/` (`.json` fixture + `.js` controller).
+
 ## Test environment (all phases)
 
 - **Site:** `ledger.localhost`
 - **Login:** `Administrator` / `admin`
 - **Tool:** the **agent-browser** skill drives the UI for acceptance tests.
 - After backend changes: `bench --site ledger.localhost migrate` (registers Page fixtures),
-  `bench restart` (reloads `doc_events` hooks), `bench build` if assets changed.
-- A populated demo company should exist so balances are non-trivial; if none, create one
-  company + a customer + an item before testing invoices.
+  `bench --site ledger.localhost clear-cache` + the dev server's auto-reload pick up new
+  Python/hooks; `bench build --app ledger_lab` when JS/CSS changed.
+- Company **BWH** (INR) on `ledger.localhost` already has fixtures (`Acme Learning Co`,
+  `TUTORIAL-SERVICE`) and sample invoices for exercising live updates.

@@ -3,6 +3,10 @@
 **Goal:** let a learner click a box to see *which accounts* make up that root-type total —
 closing the loop from abstract root type → real chart-of-accounts entries.
 
+> This is also where **account-level direction** becomes visible: a receivable Payment Entry
+> (Dr Bank, Cr Debtors) leaves the **Asset box unchanged** (both are Assets), but the Assets
+> drill-down shows Bank up and Debtors down — the green/red split the root-type box can't show.
+
 ## In scope
 - Click a box → open a `frappe.ui.Dialog` titled e.g. "Assets — account breakdown".
 - Dialog lists each non-group account of that `root_type` for the selected company/scope with
