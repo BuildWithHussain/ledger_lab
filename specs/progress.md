@@ -8,8 +8,9 @@ Repo: <https://github.com/BuildWithHussain/ledger_lab> (default branch `develop`
 | 1 — Tracer bullet: live boxes | ✅ Done | agent-browser on `ledger.localhost` |
 | 2 — Per-voucher payload + journal feed | ✅ Done | agent-browser (incl. live cancel) |
 | 3 — Teaching layer & polish | ✅ Done | agent-browser (flash up/down, count-up, reduced-motion, no client drift) |
-| 4 — Controls: company & time scope | ⬜ Not started | — |
-| 5 — Account-level drill-down | ⬜ Not started | — |
+| 4 — Controls: company & time scope | ✅ Done | agent-browser (scope toggle re-scopes 3k↔11k; in-FY event flashes, out-of-FY event gated out) |
+| 5 — Account-level drill-down | ✅ Done | agent-browser (Assets/Income dialogs reconcile to box; FY↔All-Time re-scope; GL report links) |
+| 6 — Visual redesign, persistent impact & per-line teaching | 📝 Spec'd | — |
 
 Commit `1921848` ("feat: Live ledger impact dashboard (phases 1-3)") covers phases 1–3.
 
@@ -77,9 +78,99 @@ On `ledger.localhost`, company **BWH** (currency INR): Customer `Acme Learning C
 Item `TUTORIAL-SERVICE`, plus several Sales/Purchase Invoices (some cancelled) used to exercise
 the live updates. Safe to delete; not part of the app.
 
+## What's built (phase 4)
+
+- **API** `ledger_lab/api/dashboard.py` — `get_balances` and `get_recent_vouchers` gain
+  `scope: str = "fy"` ("fy" current fiscal year / "all" all time). New `_date_range(company,
+  scope)` resolves the FY bounds via `erpnext.accounts.utils.get_fiscal_year(nowdate(),
+  company=company, as_dict=True)`; the SQL gates `posting_date` between them. `get_balances`
+  now also returns `scope` and `date_range: {start, end}` so the client can gate realtime.
+- **UI** `…/page/ledger_lab/ledger_lab.js` —
+  - **Company picker**: a Desk Link field (`page.add_field`, options `Company`) in the header,
+    defaulting to `frappe.defaults.get_default("company")`. Changing it calls `reload()`.
+  - **Scope tabs**: a small segmented control (`This Fiscal Year` / `All Time`); clicking
+    re-scopes via `reload()` (authoritative refetch + feed reseed, no animation).
+  - **Realtime scope gating**: `in_scope(posting_date)` ignores events whose `posting_date`
+    falls outside the active `date_range` (null bounds = All Time admits everything). Company
+    filtering (from phases 1–3) is unchanged.
+
+## Deviations from the phase-4 spec (reconciled)
+
+10. **No `frappe.realtime.off/on` re-bind on company/scope change.** The spec called for
+    off-before-resubscribe to avoid duplicate handlers. Instead we keep a **single** persistent
+    handler bound once in `bind_realtime`; it reads `this.company`/`this.scope`/`this.date_range`
+    from live instance state on every event, so changing controls needs no re-subscribe. Simpler
+    and equally correct — there is never more than one handler.
+
+11. **FY gating is client-side off the echoed `date_range`**, not a client recomputation of the
+    fiscal year. `get_balances` returns `date_range: {start, end}` (ISO `YYYY-MM-DD`); `in_scope`
+    compares lexically. One source of truth (the server's `get_fiscal_year`).
+
+12. **Cross-company filtering not re-exercised on this bench** — only company **BWH** exists, so
+    the "switch company" / "submit for company A while viewing B → no flash" acceptance steps
+    are N/A here. That logic is unchanged from phases 1–3 (already verified). Phase-4 verification
+    focused on the genuinely-new **scope** dimension and **FY realtime gating** (below).
+
+## Phase-4 verification (agent-browser, `ledger.localhost`)
+
+Active BWH data at test time (older fixture invoices are all cancelled): three Journal Entries —
+`1000` dated 2025-06-01, `3000` dated 2026-06-03 (in FY), `7000` dated 2025-06-15 (out of FY).
+
+- Page defaults to company **BWH**, scope **This Fiscal Year**. FY boxes = 3,000; equation balances.
+- **In-FY** submit (`2026-06-03`, +3,000) while in FY scope → boxes update live to 3,000, feed
+  prepends the JE, equation stays balanced. (Phase-3 realtime survives filtering.)
+- **Out-of-FY** submit (`2025-06-15`, +7,000) while in FY scope → **ignored**: boxes stay 3,000,
+  feed top unchanged. (New `in_scope` gate.)
+- Toggle **All Time** → re-aggregates to 11,000 (1,000 + 3,000 + 7,000), all 3 JEs in feed,
+  equation balances. Toggle back to FY → re-scopes to 3,000.
+
+## What's built (phase 5)
+
+- **API** `ledger_lab/api/dashboard.py` — `get_account_breakdown(company, root_type, scope="fy")
+  -> list[dict]`: the non-group accounts of `root_type` with (non-cancelled) GL activity in
+  scope, each `{account, balance}` (same natural-sign convention as the boxes), sorted by
+  absolute balance desc. Accounts that net to zero in scope are omitted. Reuses `_date_range`,
+  so it honors company + FY/All-Time exactly like the boxes — the rows sum to the box total.
+- **UI** `…/page/ledger_lab/ledger_lab.js` —
+  - The five root-type boxes are clickable (`role=button`, keyboard Enter/Space, hover
+    "VIEW ACCOUNTS →" affordance). **Net Profit is not clickable** — it's derived, not a
+    root_type.
+  - Click → `get_account_breakdown` → a **single, reused** `frappe.ui.Dialog` (titled
+    "Assets — account breakdown", with a "Company · scope" subline) listing each account, its
+    balance (negative balances in red), and a **Total** row that reconciles to the box.
+  - Each account links to the **General Ledger** report filtered to that account + company,
+    bounded by the active scope's dates (All Time → wide range `2000-01-01 … today`).
+
+## Deviations from the phase-5 spec (reconciled)
+
+13. **GL link route is `/app/query-report/General Ledger`**, not `/app/general-ledger`. The
+    General Ledger is a **Script Report** (`ref_doctype` GL Entry); the bare `/app/general-ledger`
+    resolves to a non-existent *Page* ("Page general-ledger not found"). Query reports route
+    under `/app/query-report/<Report Name>` (name URL-encoded). Filters pass as query params
+    (`company`, `account`, `from_date`, `to_date`).
+
+14. **Single reused dialog instance.** Each `frappe.ui.Dialog` persists in the DOM after `hide()`;
+    creating a new one per click leaks orphaned hidden modals. We keep one `this.breakdown_dialog`
+    and re-`set_title`/re-fill its body on each drill-down. (In normal use the modal backdrop
+    blocks clicking another box while one is open, so dialogs never visibly stack.)
+
+15. **Zero-net accounts omitted.** An account whose in-scope balance nets to ~0 is dropped from
+    the list (it carries none of the box total). The remaining rows still sum exactly to the box.
+
+## Phase-5 verification (agent-browser, `ledger.localhost`)
+
+Added one in-FY composition JE — Dr **Buildings** 2,000 / Cr **Cash** 2,000 (`2026-06-03`) — so
+the Asset box (unchanged at 3,000) splits across two accounts, illustrating account-level
+direction the root-type box can't show.
+
+- Click **Assets** (FY) → dialog lists **Buildings 2,000 + Cash 1,000 = Total 3,000** = box total.
+- Switch **All Time**, reopen → **Cash 9,000 + Buildings 2,000 = Total 11,000** = all-time box.
+- Click an account link → lands on **General Ledger** with `account` filter applied (e.g.
+  `Buildings - BWH`, 4 GL rows), dates matching the active scope.
+- Click **Income** → lists **Service 11,000** (credit-normal, positive) = Income box.
+- Dialog reuse confirmed: repeated drill-downs keep exactly **one** modal in the DOM.
+
 ## Next
 
-- **Phase 4** — company dropdown + FY/All-Time scope tabs (`get_balances`/`get_recent_vouchers`
-  gain a `scope` param; client realtime already filters by company). See
-  [phase-4-controls.md](phase-4-controls.md).
-- **Phase 5** — account-level drill-down dialog. See [phase-5-drilldown.md](phase-5-drilldown.md).
+- **Phase 6** — visual redesign + persistent "last impact" badges + expandable per-line
+  teaching. See [phase-6-design-and-teaching.md](phase-6-design-and-teaching.md).

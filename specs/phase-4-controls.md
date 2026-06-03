@@ -14,8 +14,10 @@ between **This Fiscal Year** and **All Time**.
   current fiscal year's `year_start_date`/`year_end_date` via `erpnext.accounts.utils.get_fiscal_year(nowdate(), company=company, as_dict=True)`. `get_recent_vouchers` and (phase 5) `get_account_breakdown` take the same `company` + `scope`.
 - **Realtime filtering:** client ignores `ledger_lab_gl_posted` events whose `company` ≠ the
   selected company. (FY scope: a new posting dated outside the FY shouldn't flash — gate on `posting_date` within range before applying.)
-- Re-bind safety: call `frappe.realtime.off("ledger_lab_gl_posted", handler)` before
-  re-subscribing on company/scope change to avoid duplicate handlers.
+- Re-bind safety: **as built**, a single persistent handler is bound once and reads
+  `this.company`/`this.scope`/`this.date_range` from live instance state on each event, so
+  company/scope changes need no re-subscribe (no duplicate-handler risk). (The earlier
+  off-before-resubscribe approach is unnecessary given this design — see progress.md §10.)
 
 ## Out of scope
 Drill-down (phase 5).

@@ -27,10 +27,11 @@ A static balance report is NOT a slice of this feature — the tracer bullet inc
 | 3 | [phase-3-teaching-layer.md](phase-3-teaching-layer.md) | Grouped BS/PL layout, equation bar, flash + count-up, color coding | The beginner "aha" — equation balances, boxes flash green/red |
 | 4 | [phase-4-controls.md](phase-4-controls.md) | Company dropdown + FY/All-Time scope tabs | Switch company & time scope; realtime filtered by company |
 | 5 | [phase-5-drilldown.md](phase-5-drilldown.md) | Account-level drill-down | Click a box → dialog of constituent accounts |
+| 6 | [phase-6-design-and-teaching.md](phase-6-design-and-teaching.md) | Visual redesign + persistent "last impact" badges + expandable per-line teaching | Deliberately-designed page where every transaction leaves a readable record and any feed row explains itself in plain English |
 
 Build in order. Each phase ends with an acceptance test you can run before moving on.
 
-**Status:** phases 1–3 are done and verified — see [progress.md](progress.md) for status, what's
+**Status:** phases 1–5 are done and verified — see [progress.md](progress.md) for status, what's
 built, and the deviations we discovered while coding (now reconciled into the specs below).
 
 ## Layout & paths (as built)

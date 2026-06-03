@@ -11,7 +11,9 @@ closing the loop from abstract root type → real chart-of-accounts entries.
 - Click a box → open a `frappe.ui.Dialog` titled e.g. "Assets — account breakdown".
 - Dialog lists each non-group account of that `root_type` for the selected company/scope with
   its balance (applying the same sign convention), sorted by absolute balance desc.
-- Each account row links to its Account / its General Ledger report filtered to that account.
+- Each account row links to its General Ledger report filtered to that account. **As built:**
+  the route is `/app/query-report/General Ledger?company=…&account=…&from_date=…&to_date=…`
+  (GL is a Script Report; the bare `/app/general-ledger` is not a valid Page — see progress.md §13).
 - Respects the current company + scope (FY/All Time) from phase 4.
 
 ## Files
