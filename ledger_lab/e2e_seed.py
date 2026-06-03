@@ -34,13 +34,17 @@ def setup_e2e_data():
 
 
 def _mark_setup_complete() -> None:
-	"""Flip Frappe's global setup-complete flag.
+	"""Mark every installed app's setup as complete.
 
 	ERPNext's `setup_complete` stage-runner installs the company/fixtures but
-	does not set `System Settings.setup_complete`, so the desk would otherwise
-	redirect every route (including /app/ledger-lab) to the onboarding wizard.
+	does not flip the setup-complete flag, so the desk would otherwise redirect
+	every route (including /app/ledger-lab) to the onboarding wizard. The gate
+	`frappe.is_setup_complete()` reads `Installed Application.is_setup_complete`
+	for each app (frappe + erpnext), so set it on all of them.
 	"""
-	frappe.db.set_single_value("System Settings", "setup_complete", 1)
+	for app_name in frappe.get_all("Installed Application", pluck="app_name"):
+		frappe.db.set_value("Installed Application", {"app_name": app_name}, "is_setup_complete", 1)
+	frappe.clear_cache()
 
 
 def _ensure_company() -> str:
