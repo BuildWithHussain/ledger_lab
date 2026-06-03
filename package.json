@@ -1,0 +1,21 @@
+{
+  "name": "ledger_lab",
+  "version": "1.0.0",
+  "description": "Live ledger-impact teaching dashboard for ERPNext",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:debug": "playwright test --debug"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BuildWithHussain/ledger_lab.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}
