@@ -27,9 +27,20 @@ def setup_e2e_data():
 	"""Run the ERPNext setup wizard (if needed) and post a seed Journal Entry."""
 	company = _ensure_company()
 	_ensure_default_company(company)
+	_mark_setup_complete()
 	_post_seed_journal_entry(company)
 	frappe.db.commit()
 	print(f"E2E seed complete for company {company!r}")
+
+
+def _mark_setup_complete() -> None:
+	"""Flip Frappe's global setup-complete flag.
+
+	ERPNext's `setup_complete` stage-runner installs the company/fixtures but
+	does not set `System Settings.setup_complete`, so the desk would otherwise
+	redirect every route (including /app/ledger-lab) to the onboarding wizard.
+	"""
+	frappe.db.set_single_value("System Settings", "setup_complete", 1)
 
 
 def _ensure_company() -> str:

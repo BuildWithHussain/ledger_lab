@@ -14,8 +14,10 @@ test.describe("Ledger Lab dashboard", () => {
 	}) => {
 		await page.goto("/app/ledger-lab");
 
+		// The desk SPA loads the page controller (which builds .ll-wrap) after
+		// the route resolves — allow a generous timeout for a cold CI server.
 		const wrap = page.locator(".ll-wrap");
-		await expect(wrap).toBeVisible();
+		await expect(wrap).toBeVisible({ timeout: 30000 });
 
 		// Hero: the accounting equation.
 		await expect(page.locator(".ll-eq-kicker")).toHaveText(
