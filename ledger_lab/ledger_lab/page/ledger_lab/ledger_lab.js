@@ -451,6 +451,8 @@ class LedgerLab {
 		if (this.company) this.company_field.set_value(this.company);
 
 		// Scope tabs: This Fiscal Year / All Time.
+		// (sync_company_field below keeps the picker honest once the server
+		// echoes the authoritatively-resolved company.)
 		this.page.main.find(".ll-scope-tab").on("click", (e) => {
 			const scope = e.currentTarget.getAttribute("data-scope");
 			if (scope === this.scope) return;
@@ -558,6 +560,16 @@ class LedgerLab {
 		this.load_feed();
 	}
 
+	// Point the picker at the server-resolved company without re-triggering a
+	// reload (the change handler no-ops when the value already matches
+	// this.company, which refresh() sets just before calling this).
+	sync_company_field() {
+		if (!this.company_field || !this.company) return;
+		if (this.company_field.get_value() !== this.company) {
+			this.company_field.set_value(this.company);
+		}
+	}
+
 	bind_realtime() {
 		frappe.realtime.off("ledger_lab_gl_posted");
 		frappe.realtime.on("ledger_lab_gl_posted", (data) => {
@@ -592,6 +604,11 @@ class LedgerLab {
 			callback: (r) => {
 				if (!r.message) return;
 				this.company = r.message.company;
+				// Reflect the server-resolved company in the picker. Handles the
+				// case where the client-side default was empty or stale (pointing
+				// at a company that no longer exists): the box loads data for the
+				// real fallback company, so the picker should show it too.
+				this.sync_company_field();
 				this.currency = r.message.currency;
 				this.date_range = r.message.date_range || { start: null, end: null };
 				const b = r.message.boxes || {};
