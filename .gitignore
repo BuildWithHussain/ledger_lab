@@ -59,3 +59,7 @@ e2e/.auth/
 
 # Aider AI Chat
 .aider*
+
+# E2E / browser testing artifacts
+e2e/.auth/
+test-results/
