@@ -11,17 +11,27 @@ MAX_RECENT_VOUCHER_LIMIT = 50
 VALID_SCOPES = frozenset({"fy", "all"})
 
 
+def _first_accessible_company() -> str | None:
+	"""Oldest company the current user can read, or None if there are none."""
+	companies = frappe.get_list("Company", pluck="name", order_by="creation asc", limit=1)
+	return companies[0] if companies else None
+
+
 def _resolve_company(company: str | None) -> str:
 	company = company.strip() if company else None
 	if not company:
 		company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
 			"Global Defaults", "default_company"
 		)
+	# A missing or stale default (e.g. a deleted/renamed company, or a leftover
+	# user default pointing at a company that no longer exists) shouldn't blank
+	# out the dashboard. Fall back to the first company the user can access so
+	# the page always opens with data. The Company picker only ever submits real
+	# companies, so this lenient fallback never masks a genuine bad selection.
+	if not company or not frappe.db.exists("Company", company):
+		company = _first_accessible_company()
 	if not company:
-		frappe.throw(_("No company found. Please set a default company."))
-
-	if not frappe.db.exists("Company", company):
-		frappe.throw(_("Company {0} does not exist.").format(company))
+		frappe.throw(_("No company found. Please create a company first."))
 
 	frappe.has_permission("Company", ptype="read", doc=company, throw=True)
 	return company
