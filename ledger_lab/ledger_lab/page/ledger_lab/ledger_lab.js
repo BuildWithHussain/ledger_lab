@@ -80,10 +80,35 @@ class LedgerLab {
 		this.render_skeleton();
 		this.setup_controls();
 		this.bind_realtime();
-		this.refresh();
-		this.load_feed();
+		// Resolve a company before the first load so the dashboard always opens
+		// with data instead of erroring out when no default company is set.
+		this.init_company().then(() => {
+			this.refresh();
+			this.load_feed();
+		});
 		// Keep the sticky badges' relative times ("just now" → "2m ago") fresh.
 		this.impact_timer = setInterval(() => this.tick_impact_times(), 30000);
+	}
+
+	// Ensure a company is always selected on open. Frappe's default ("company")
+	// can be unset for a user or a freshly-set-up site; rather than letting the
+	// server error out with "No company found", fall back to the first available
+	// company so the page opens with data. Keeps the header picker in sync.
+	async init_company() {
+		if (!this.company) {
+			try {
+				const rows = await frappe.db.get_list("Company", {
+					fields: ["name"],
+					order_by: "creation asc",
+					limit: 1,
+				});
+				if (rows && rows.length) this.company = rows[0].name;
+			} catch (e) {
+				// Permission/query issue — leave unset; refresh() surfaces the
+				// server's message rather than masking it.
+			}
+		}
+		if (this.company) this.company_field.set_value(this.company);
 	}
 
 	render_skeleton() {
