@@ -136,8 +136,13 @@ class LedgerLab {
 							var(--card-bg, var(--fg-color)) 58%);
 				}
 				.ll-equation::before {
-					content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+					content: ""; position: absolute; left: 0; width: 4px;
+					/* inset by the card radius so the rail stays clear of the
+					   rounded corners instead of poking its square top/bottom
+					   past them (overflow:hidden alone doesn't clip it cleanly) */
+					top: 14px; bottom: 14px;
 					background: var(--ll-accent);
+					border-radius: 0 3px 3px 0;
 				}
 				.ll-eq-kicker {
 					font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
